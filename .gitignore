@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Media produced by tests and manual runs
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.gif
+*.mp3
+*.m4a
+*.wav
+*_frames/
+*_report.md
+*_report.html
+*_report_assets/
+*_sheet.jpg
+*_test/
+_dl/
+_isolated_home/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+.DS_Store

@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate skill bundle (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate the bundle layout and frontmatter
+        run: python .github/check_bundle.py
+
+      - name: Every command must have a working --help
+        shell: bash
+        run: |
+          S=skills/video-toolkit/scripts/video_ops.py
+          for cmd in doctor bootstrap probe frames sheet scenes clip compress convert \
+                     scale gif audio normalize silence loudness report transcribe; do
+            python "$S" "$cmd" --help > /dev/null
+            echo "  ok  $cmd --help"
+          done
+          python "$S" --help > /dev/null
+
+      - name: Doctor must answer without ffmpeg installed
+        shell: bash
+        run: python skills/video-toolkit/scripts/video_ops.py doctor | tee doctor-noffmpeg.json
+
+      - name: Install ffmpeg and run the full pipeline
+        shell: bash
+        run: |
+          if ! command -v ffmpeg > /dev/null; then
+            python skills/video-toolkit/scripts/video_ops.py bootstrap --download
+          fi
+          python skills/video-toolkit/scripts/video_ops.py doctor | tee doctor.json
+          python .github/smoke_test.py
