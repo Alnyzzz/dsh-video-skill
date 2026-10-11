@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """video_ops.py - the command-line body of the DSH `video-toolkit` skill.
 
 One entry point for everything the agent needs to do with a video or audio file:
@@ -116,9 +116,15 @@ def emit(payload, args) -> None:
         # Commands that call another command internally must not leak its payload,
         # because callers parse exactly one JSON object from stdout.
         return
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
     if getattr(args, "json_out", None):
         write_json(Path(args.json_out), payload)
         print(f"JSON: {Path(args.json_out).resolve()}")
+    elif getattr(args, "_json_stdout", False):
+        try:
+            print(text)
+        except UnicodeEncodeError:
+            sys.stdout.buffer.write(text.encode("utf-8", "replace"))
     else:
         print_json(payload)
 
@@ -558,8 +564,14 @@ def cmd_sheet(args) -> int:
     rows = max(1, args.rows) if args.rows else max(1, math.ceil(args.count / columns))
     count = args.count if args.rows is None else max(1, columns * rows)
 
-    with tempfile.TemporaryDirectory(prefix="dsh-sheet-") as tmp:
-        tmpdir = Path(tmp)
+    # Intermediate stills go beside the output, never into the system temp directory: under
+    # DSH's workspace-write policy a sandboxed run cannot write outside the workspace.
+    # The directory is created with os.makedirs rather than tempfile.mkdtemp on purpose 鈥?
+    # mkdtemp applies mode 0700, which the sandbox ACL then refuses to let child processes
+    # read or write, turning a successful sheet into a PermissionError.
+    tmpdir = outfile.parent / f"_dsh_sheet_{os.urandom(4).hex()}"
+    tmpdir.mkdir(parents=True, exist_ok=True)
+    try:
         frame_args = argparse.Namespace(**vars(args))
         frame_args.input = str(src)
         frame_args.outdir = str(tmpdir)
@@ -596,17 +608,31 @@ def cmd_sheet(args) -> int:
             payload = {"file": str(src.resolve()), "sheet": str(outfile.resolve()),
                        "engine": "ffmpeg tile filter", "columns": columns, "rows": rows}
             run_ffmpeg(tools, cmd, args, payload)
+            payload["cleanup"] = "intermediate frames removed" if _remove_tree(tmpdir) else "cleanup deferred"
             emit(payload, args)
             return 0
 
-    payload = {"file": str(src.resolve()), "sheet": str(outfile.resolve()), "engine": "Pillow",
-               "columns": columns, "rows": rows, "cells": len(images),
-               "bytes": outfile.stat().st_size if outfile.exists() else None,
-               "hint": "read this image with the read_image tool; timestamps run left to right, top to bottom"}
-    if args.labels:
-        payload["labels"] = labels
-    emit(payload, args)
-    return 0
+        payload = {"file": str(src.resolve()), "sheet": str(outfile.resolve()), "engine": "Pillow",
+                   "columns": columns, "rows": rows, "cells": len(images),
+                   "bytes": outfile.stat().st_size if outfile.exists() else None,
+                   "hint": "read this image with the read_image tool; timestamps run left to right, top to bottom"}
+        if args.labels:
+            payload["labels"] = labels
+        if not _remove_tree(tmpdir):
+            payload["cleanup"] = f"intermediate frames kept at {tmpdir}"
+        emit(payload, args)
+        return 0
+    finally:
+        _remove_tree(tmpdir)
+
+
+def _remove_tree(path: Path) -> bool:
+    """Best-effort removal of a throwaway directory; never raises."""
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except Exception:  # noqa: BLE001 - cleanup never fails a command
+        return False
+    return not path.exists()
 
 
 def _list_frames(tools: Tools, src: Path, count: int) -> list[dict]:
@@ -1047,30 +1073,30 @@ def cmd_report(args) -> int:
         sheet_ok = False
 
     lines: list[str] = []
-    lines.append(f"# 视频检查报告 / Video inspection report")
+    lines.append(f"# 瑙嗛妫€鏌ユ姤鍛?/ Video inspection report")
     lines.append("")
-    lines.append(f"- 文件 File: `{src.resolve()}`")
-    lines.append(f"- 大小 Size: {human_size(src.stat().st_size)}")
-    lines.append(f"- 容器 Container: {fmt.get('format_long_name') or fmt.get('format_name')}")
-    lines.append(f"- 时长 Duration: {format_timecode(duration)} ({_round(duration)} s)")
+    lines.append(f"- 鏂囦欢 File: `{src.resolve()}`")
+    lines.append(f"- 澶у皬 Size: {human_size(src.stat().st_size)}")
+    lines.append(f"- 瀹瑰櫒 Container: {fmt.get('format_long_name') or fmt.get('format_name')}")
+    lines.append(f"- 鏃堕暱 Duration: {format_timecode(duration)} ({_round(duration)} s)")
     if vstream:
-        lines.append(f"- 画面 Video: {vstream.get('codec_name')} {vstream.get('width')}x{vstream.get('height')} "
+        lines.append(f"- 鐢婚潰 Video: {vstream.get('codec_name')} {vstream.get('width')}x{vstream.get('height')} "
                      f"@ {_fps(vstream.get('avg_frame_rate') or vstream.get('r_frame_rate'))} fps, "
                      f"{vstream.get('pix_fmt')}, {human_size(_i(vstream.get('bit_rate')) or 0)}/s")
     if astream:
         for stream in astream:
-            lines.append(f"- 音频 Audio #{stream.get('index')}: {stream.get('codec_name')} "
+            lines.append(f"- 闊抽 Audio #{stream.get('index')}: {stream.get('codec_name')} "
                          f"{stream.get('sample_rate')} Hz, {stream.get('channels')} ch, "
                          f"{human_size(_i(stream.get('bit_rate')) or 0)}/s")
     else:
-        lines.append("- 音频 Audio: 无 / none")
+        lines.append("- 闊抽 Audio: 鏃?/ none")
     lines.append("")
     if sheet_ok:
-        lines.append(f"## 关键帧 / Contact sheet")
+        lines.append(f"## 鍏抽敭甯?/ Contact sheet")
         lines.append("")
         lines.append(f"![contact sheet]({assets.name}/sheet.jpg)")
         lines.append("")
-    lines.append("## 原始元数据 / Raw metadata")
+    lines.append("## 鍘熷鍏冩暟鎹?/ Raw metadata")
     lines.append("")
     lines.append("```json")
     lines.append(json.dumps({"format": fmt, "streams": data.get("streams", [])},
@@ -1078,7 +1104,7 @@ def cmd_report(args) -> int:
     lines.append("```")
     if (frames_dir.exists() and any(frames_dir.iterdir())) or (sheet_ok and args.frames):
         lines.append("")
-        lines.append(f"关键帧目录 / Frames: `{frames_dir}`")
+        lines.append(f"鍏抽敭甯х洰褰?/ Frames: `{frames_dir}`")
     out.write_text("\n".join(lines), encoding="utf-8")
 
     html_path = out.with_suffix(".html")
@@ -1109,7 +1135,7 @@ def _write_html_report(html_path: Path, src: Path, fmt: dict, data: dict, sheet:
                   f'style="max-width:100%;border-radius:8px">' if sheet else "")
     html_path.write_text(f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
-<title>视频报告 - {html.escape(src.name)}</title>
+<title>瑙嗛鎶ュ憡 - {html.escape(src.name)}</title>
 <style>
  body {{ font: 15px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
         margin: 32px auto; max-width: 960px; color: #e8e8ea; background: #141416; }}
@@ -1118,17 +1144,17 @@ def _write_html_report(html_path: Path, src: Path, fmt: dict, data: dict, sheet:
  th, td {{ border: 1px solid #333; padding: 6px 10px; text-align: left; font-size: 14px; }}
  th {{ background: #1f1f24; }}
 </style></head><body>
-<h1>视频检查报告</h1>
+<h1>瑙嗛妫€鏌ユ姤鍛?/h1>
 <p><code>{html.escape(str(src.resolve()))}</code></p>
 <ul>
- <li>容器: {html.escape(str(fmt.get('format_long_name') or fmt.get('format_name')))}</li>
- <li>时长: {format_timecode(_f(fmt.get('duration')))}</li>
- <li>码率: {html.escape(human_size(_i(fmt.get('bit_rate')) or 0))}/s</li>
- <li>大小: {html.escape(human_size(_i(fmt.get('size')) or src.stat().st_size))}</li>
+ <li>瀹瑰櫒: {html.escape(str(fmt.get('format_long_name') or fmt.get('format_name')))}</li>
+ <li>鏃堕暱: {format_timecode(_f(fmt.get('duration')))}</li>
+ <li>鐮佺巼: {html.escape(human_size(_i(fmt.get('bit_rate')) or 0))}/s</li>
+ <li>澶у皬: {html.escape(human_size(_i(fmt.get('size')) or src.stat().st_size))}</li>
 </ul>
 {sheet_html}
-<h2>流 / Streams</h2>
-<table><tr><th>#</th><th>类型</th><th>编码</th><th>尺寸</th><th>采样率/码率</th></tr>
+<h2>娴?/ Streams</h2>
+<table><tr><th>#</th><th>绫诲瀷</th><th>缂栫爜</th><th>灏哄</th><th>閲囨牱鐜?鐮佺巼</th></tr>
 {''.join(rows)}
 </table>
 </body></html>""", encoding="utf-8")
@@ -1153,7 +1179,7 @@ def cmd_transcribe(args) -> int:
         emit(payload, args)
         return 5
 
-    wav = Path(tempfile.gettempdir()) / f"{src.stem}_16k.wav"
+    wav = src.parent / f".{src.stem}_16k.wav"
     ffmpeg = tools.require_ffmpeg()
     ffmpeg_run([ffmpeg, "-hide_banner", "-v", "error", "-y", "-i", str(src),
                 "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", str(wav)], timeout=None)
@@ -1253,13 +1279,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    def add_stdout_flag(target: argparse.ArgumentParser) -> None:
+        # Machine-readable stdout: exactly one JSON object, nothing else. Accepts
+        # both dashes so `--_json-stdout` works before or after the subcommand.
+        target.add_argument("--_json-stdout", "--_json_stdout", dest="_json_stdout",
+                            action="store_true",
+                            help=argparse.SUPPRESS)
+
     p = sub.add_parser("doctor", help="diagnose tools, encoders, filters and Python modules")
     add_common(p)
+    add_stdout_flag(p)
     p.add_argument("--json-out")
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("bootstrap", help="install a private ffmpeg/ffprobe pair")
     add_common(p, bootstrap=False)
+    add_stdout_flag(p)
     p.add_argument("--download", action="store_true",
                    help="download ffmpeg from a public mirror when no local copy is available")
     p.add_argument("--source", help="local archive/binary/directory to install from instead")
@@ -1270,12 +1305,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("probe", help="metadata as JSON (duration, streams, codecs, fps)")
     add_common(p)
+    add_stdout_flag(p)
     p.add_argument("input")
     p.add_argument("--json-out")
     p.set_defaults(func=cmd_probe)
 
     p = sub.add_parser("frames", help="extract frames as images the model can read")
     add_common(p)
+    add_stdout_flag(p)
     p.add_argument("input")
     add_outdir(p)
     p.add_argument("--at", action="append", help="timestamp, repeatable (12.5 / 00:01:02.5)")
@@ -1291,6 +1328,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("sheet", help="build one labeled contact sheet image")
     add_common(p)
+    add_stdout_flag(p)
     p.add_argument("input")
     p.add_argument("--out", help="output image path (default <input>_sheet.jpg)")
     p.add_argument("--count", type=int, default=12, help="cell count (default 12)")
@@ -1307,6 +1345,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("scenes", help="detect shot boundaries")
     add_common(p)
+    add_stdout_flag(p)
     p.add_argument("input")
     p.add_argument("--threshold", type=float, default=0.35, help="scene score 0..1 (default 0.35)")
     p.add_argument("--frames", help="also export one frame per scene into this directory")
@@ -1316,6 +1355,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("clip", help="cut a segment")
     add_common(p)
+    add_stdout_flag(p)
     p.add_argument("input")
     p.add_argument("--start", required=True, help="start timestamp")
     p.add_argument("--end", help="end timestamp")
@@ -1333,6 +1373,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("compress", help="shrink a file (CRF or target size)")
     add_common(p)
+    add_stdout_flag(p)
     p.add_argument("input")
     p.add_argument("--out")
     add_outdir(p)
@@ -1348,6 +1389,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("convert", help="change container/codec (mp4, mkv, webm, mov)")
     add_common(p)
+    add_stdout_flag(p)
     p.add_argument("input")
     p.add_argument("--to", required=True, help="target extension, e.g. mp4 / mkv / webm")
     p.add_argument("--out")
@@ -1364,6 +1406,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("scale", help="resize")
     add_common(p)
+    add_stdout_flag(p)
     p.add_argument("input")
     p.add_argument("--size", required=True, help="1280x720, 1920:-2, or 720p/1080p/4k")
     p.add_argument("--fit", choices=["stretch", "pad", "crop"], default="stretch")
@@ -1377,6 +1420,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("gif", help="animated GIF with an optimized palette")
     add_common(p)
+    add_stdout_flag(p)
     p.add_argument("input")
     p.add_argument("--out")
     add_outdir(p)
@@ -1392,6 +1436,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("audio", help="extract / transcode the audio track")
     add_common(p)
+    add_stdout_flag(p)
     p.add_argument("input")
     p.add_argument("--out")
     add_outdir(p)
@@ -1405,6 +1450,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("normalize", help="EBU R128 loudness normalization")
     add_common(p)
+    add_stdout_flag(p)
     p.add_argument("input")
     p.add_argument("--out")
     add_outdir(p)
@@ -1418,6 +1464,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("silence", help="find silent stretches / speech windows")
     add_common(p)
+    add_stdout_flag(p)
     p.add_argument("input")
     p.add_argument("--noise-db", type=float, default=-35.0)
     p.add_argument("--min-duration", type=float, default=0.6)
@@ -1426,6 +1473,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("loudness", help="measure loudness (EBU R128 or volumedetect)")
     add_common(p)
+    add_stdout_flag(p)
     p.add_argument("input")
     p.add_argument("--ebur128", action="store_true", help="use ebur128 instead of volumedetect")
     p.add_argument("--json-out")
@@ -1433,6 +1481,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("report", help="write a Markdown + HTML inspection report")
     add_common(p)
+    add_stdout_flag(p)
     p.add_argument("input")
     p.add_argument("--out", help="report path (default <input>_report.md)")
     p.add_argument("--count", type=int, default=12)
@@ -1445,6 +1494,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("transcribe", help="speech to text through a local whisper.cpp build")
     add_common(p)
+    add_stdout_flag(p)
     p.add_argument("input")
     p.add_argument("--binary", help="path to whisper-cli / main")
     p.add_argument("--model", help="ggml model path")

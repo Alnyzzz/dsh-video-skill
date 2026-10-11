@@ -12,6 +12,7 @@ The module is standard-library only, so it runs on the Python that DSH already s
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import platform
@@ -113,6 +114,38 @@ def video_home() -> Path:
 
 def tools_dir() -> Path:
     return video_home() / "tools"
+
+
+def work_dir(prefix: str = "work") -> Path:
+    """Create a scratch directory that a sandboxed run is allowed to use.
+
+    `tempfile` writes to the system temp directory, which DSH's workspace-write file
+    policy denies to child processes; and `mkdtemp` applies mode 0700, which the sandbox
+    ACL then refuses to let those processes read. So scratch always lives under the
+    private per-user directory the skill already owns, created with the parent's ACL.
+    """
+    directory = video_home() / f".{prefix}-{os.urandom(4).hex()}"
+    directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def remove_tree(path) -> bool:
+    """Best-effort recursive removal that never raises and never fails a command."""
+    try:
+        shutil.rmtree(path, ignore_errors=True)
+    except Exception:  # noqa: BLE001 - cleanup is not the operation
+        return False
+    return not Path(path).exists()
+
+
+@contextlib.contextmanager
+def _scratch():
+    """Scratch directory under the private home, removed on the way out."""
+    directory = work_dir("ffmpeg")
+    try:
+        yield directory
+    finally:
+        remove_tree(directory)
 
 
 def cache_path() -> Path:
@@ -711,7 +744,7 @@ def bootstrap_tools(*, source: str | None = None, allow_download: bool = False,
         if not candidate.exists():
             raise ToolError(f"--source path does not exist: {candidate}")
         if candidate.is_file() and candidate.suffix.lower() in {".zip", ".7z", ".xz", ".gz", ".tgz"}:
-            with tempfile.TemporaryDirectory(prefix="dsh-ffmpeg-") as tmp:
+            with _scratch() as tmp:
                 root = _extract(candidate, Path(tmp))
                 pair = _walk_for_pair(root)
                 if not pair:
@@ -763,7 +796,7 @@ def bootstrap_tools(*, source: str | None = None, allow_download: bool = False,
                 expected[url] = info["length"]
         for attempt in range(1, max(1, retries) + 1):
             try:
-                with tempfile.TemporaryDirectory(prefix="dsh-ffmpeg-") as tmp:
+                with _scratch() as tmp:
                     tmp_path = Path(tmp)
                     archive, source_url = _download_racing(plan, tmp_path, expected)
                     root = _extract(archive, tmp_path / "x")
@@ -779,7 +812,7 @@ def bootstrap_tools(*, source: str | None = None, allow_download: bool = False,
 
     for url, filename in plan:
         try:
-            with tempfile.TemporaryDirectory(prefix="dsh-ffmpeg-") as tmp:
+            with _scratch() as tmp:
                 tmp_path = Path(tmp)
                 archive = _download(url, tmp_path / filename)
                 root = _extract(archive, tmp_path / "x")

@@ -6,20 +6,27 @@ extra tooling, and assert the JSON contract. Used by CI and runnable locally.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
+import shutil
 import subprocess
 import sys
-import tempfile
 
 SKILL = pathlib.Path(__file__).resolve().parent.parent / "skills" / "video-toolkit" / "scripts" / "video_ops.py"
+REPO = SKILL.parents[3]
+
+# The child prints UTF-8 JSON; on a Chinese Windows the console code page is GBK, so the
+# decode has to be pinned or subprocess.run raises before the assertion can run.
+CHILD_ENV = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
 
 
 def run(*args: str, expect: int = 0) -> dict:
-    proc = subprocess.run([sys.executable, str(SKILL), *args], capture_output=True, text=True)
+    proc = subprocess.run([sys.executable, str(SKILL), *args], capture_output=True,
+                          text=True, encoding="utf-8", errors="replace", env=CHILD_ENV)
     if proc.returncode != expect:
         raise AssertionError(f"{' '.join(args)} exited {proc.returncode}, expected {expect}\n"
                              f"stdout: {proc.stdout}\nstderr: {proc.stderr}")
-    text = proc.stdout.strip()
+    text = (proc.stdout or "").strip()
     if not text:
         return {}
     start = text.find("{")
@@ -34,8 +41,13 @@ def main() -> int:
     print(f"ffprobe: {doctor['resolved']['ffprobe']}")
     print(f"encoders: {[k for k, v in doctor['encoders'].items() if v]}")
 
-    with tempfile.TemporaryDirectory(prefix="video-toolkit-smoke-") as tmp:
-        work = pathlib.Path(tmp)
+    # Scratch lives inside the repository, not the system temp directory: under DSH's
+    # workspace-write policy a sandboxed run cannot write there (and mkdtemp's 0700 mode
+    # is refused by the sandbox ACL), so every command would fail for the wrong reason.
+    work = REPO / ".smoke-work"
+    shutil.rmtree(work, ignore_errors=True)
+    work.mkdir(parents=True, exist_ok=True)
+    try:
         source = work / "sample.mp4"
         encoder = "libx264" if doctor["encoders"].get("libx264") else "mpeg4"
         subprocess.run([ffmpeg, "-hide_banner", "-v", "error", "-y",
@@ -117,6 +129,8 @@ def main() -> int:
         transcribe = run("transcribe", str(source), expect=5)
         assert transcribe["ok"] is False and transcribe["options"], transcribe
         print("transcribe ok (no backend -> exit 5 with options)")
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
     print("\nSMOKE TEST PASSED")
     return 0
