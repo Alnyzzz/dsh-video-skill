@@ -62,3 +62,11 @@ jobs:
           fi
           python skills/video-toolkit/scripts/video_ops.py doctor | tee doctor.json
           python .github/smoke_test.py
+
+      - name: Contact sheet without Pillow (ffmpeg tile route)
+        shell: bash
+        run: |
+          # The runner images differ in ffmpeg builds; one of them reports
+          # "globbing is not supported by this libavformat build", which is exactly what this
+          # checks: the tile fallback must work from a numbered sequence, with no Pillow.
+          python .github/test_tile_fallback.py skills/video-toolkit
