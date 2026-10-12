@@ -68,10 +68,16 @@ def main() -> int:
             problems.append(f"SKILL.md references references/{mention}, which does not exist")
 
     for script in sorted((SKILL_DIR / "scripts").glob("*.py")):
+        if script.read_bytes().startswith(b"\xef\xbb\xbf"):
+            # A UTF-8 BOM is legal in a file and illegal to `compile()`. Windows editors add
+            # it silently and only CI notices, so it is checked explicitly.
+            problems.append(f"{script.relative_to(ROOT)} starts with a UTF-8 BOM; save it without one")
         try:
             compile(script.read_text(encoding="utf-8"), str(script), "exec")
         except SyntaxError as exc:
             problems.append(f"python syntax error in {script.relative_to(ROOT)}: {exc}")
+        except UnicodeDecodeError as exc:
+            problems.append(f"{script.relative_to(ROOT)} is not valid UTF-8: {exc}")
 
     for shell_script in sorted((ROOT / "scripts").glob("*")):
         if shell_script.suffix not in {".ps1", ".sh"}:
