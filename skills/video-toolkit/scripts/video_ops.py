@@ -386,7 +386,11 @@ def cmd_doctor(args) -> int:
 
     report["ok"] = bool(tools.ffmpeg)
     emit(report, args)
-    return 0 if report["ok"] else 3
+    # A diagnosis always succeeds at diagnosing: `ok: false` plus the warnings carry what is
+    # missing, and scripts assert on that payload. Exit 3 is reserved for an operation that
+    # was actually requested and could not be performed (probe, frames, an encode), where a
+    # caller needs a non-zero status rather than a JSON field to notice.
+    return 0
 
 
 def cmd_bootstrap(args) -> int:
