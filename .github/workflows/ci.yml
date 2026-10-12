@@ -38,7 +38,21 @@ jobs:
 
       - name: Doctor must answer without ffmpeg installed
         shell: bash
-        run: python skills/video-toolkit/scripts/video_ops.py doctor | tee doctor-noffmpeg.json
+        run: |
+          # `doctor` always exits 0: diagnosing successfully is not a failure. What CI
+          # asserts is the payload — a structured report that names the problem, not a
+          # traceback and not a silent success.
+          python skills/video-toolkit/scripts/video_ops.py doctor > doctor-noffmpeg.json
+          python - <<'PY'
+          import json, pathlib
+          data = json.loads(pathlib.Path("doctor-noffmpeg.json").read_text(encoding="utf-8"))
+          assert "found" in data and "warnings" in data, data
+          if data["ok"]:
+              print("ffmpeg already present on this runner:", str(data["resolved"])[:120])
+          else:
+              assert data["warnings"], "a missing ffmpeg must be reported as a warning"
+              print("reported missing ffmpeg as expected:", data["warnings"][0])
+          PY
 
       - name: Install ffmpeg and run the full pipeline
         shell: bash
