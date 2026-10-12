@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """video_ops.py - the command-line body of the DSH `video-toolkit` skill.
 
 One entry point for everything the agent needs to do with a video or audio file:
