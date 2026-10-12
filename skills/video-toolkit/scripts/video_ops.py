@@ -520,7 +520,7 @@ def cmd_frames(args) -> int:
     ffmpeg = tools.require_ffmpeg()
 
     if args.all_frames:
-        pattern = outdir / f"{src.stem}_%05d.{ext}"
+        pattern = Path(getattr(args, "pattern", None) or (outdir / f"{src.stem}_%05d.{ext}"))
         cmd = [ffmpeg, "-hide_banner", "-v", "error", "-y", "-i", str(src)]
         if args.fps:
             cmd += ["-vf", f"fps={args.fps},scale={args.width}:-2" if args.width else f"fps={args.fps}"]
@@ -530,12 +530,14 @@ def cmd_frames(args) -> int:
         payload = {"file": str(src.resolve()), "mode": "all_frames", "outdir": str(outdir.resolve()),
                    "pattern": str(pattern.resolve()), "frames": None}
         run_ffmpeg(tools, cmd, args, payload, timeout=None)
-        payload["written"] = len(list(outdir.glob(f"{src.stem}_*.{ext}")))
+        payload["written"] = len(list(outdir.glob(f"{src.stem}_*.{ext}"))) or len(list(outdir.glob(f"frame_*.{ext}")))
         emit(payload, args)
         return 0
 
     for index, stamp in enumerate(stamps):
-        target = outdir / f"{src.stem}_{index + 1:03d}_{_safe_time(stamp)}.{ext}"
+        explicit = getattr(args, "pattern", None)
+        target = Path(explicit % (index + 1)) if explicit else (
+            outdir / f"{src.stem}_{index + 1:03d}_{_safe_time(stamp)}.{ext}")
         cmd = [ffmpeg, "-hide_banner", "-v", "error", "-y", "-ss", f"{max(0.0, stamp):.3f}",
                "-i", str(src), "-frames:v", "1"]
         if scale:
@@ -570,7 +572,7 @@ def cmd_sheet(args) -> int:
 
     # Intermediate stills go beside the output, never into the system temp directory: under
     # DSH's workspace-write policy a sandboxed run cannot write outside the workspace.
-    # The directory is created with os.makedirs rather than tempfile.mkdtemp on purpose 鈥?
+    # The directory is created with Path.mkdir rather than tempfile.mkdtemp on purpose:
     # mkdtemp applies mode 0700, which the sandbox ACL then refuses to let child processes
     # read or write, turning a successful sheet into a PermissionError.
     tmpdir = outfile.parent / f"_dsh_sheet_{os.urandom(4).hex()}"
@@ -593,6 +595,11 @@ def cmd_sheet(args) -> int:
         frame_args.source = None
         frame_args.json_out = None
         frame_args._quiet = True
+        # Numbered filenames, so the ffmpeg tile fallback can use the image2 demuxer's own
+        # sequence syntax. `-pattern_type glob` needs a libavformat built with globbing, and
+        # the ffmpeg 7.x build on GitHub's Windows runners has none — a real user's build may
+        # not either, and there is no reason to depend on it.
+        frame_args.pattern = str(tmpdir / f"frame_%04d.{frame_args.format}")
         rc = cmd_frames(frame_args)
         if rc != 0:
             return rc
@@ -604,10 +611,13 @@ def cmd_sheet(args) -> int:
         composed = _compose_sheet(images, outfile, columns, args.cell_width,
                                   labels if args.labels else None, args.label_size)
         if not composed:
+            # No Pillow: let ffmpeg tile the same stills. A numbered sequence, never a glob —
+            # see the note where `frame_args.pattern` is set.
             ffmpeg = tools.require_ffmpeg()
-            pattern = str(Path(images[0]).parent / "*.jpeg")
-            cmd = [ffmpeg, "-hide_banner", "-v", "error", "-y", "-pattern_type", "glob",
-                   "-i", pattern, "-vf", f"scale={args.cell_width}:-2,tile={columns}x{rows}",
+            sequence = str(tmpdir / f"frame_%04d.{frame_args.format}")
+            cmd = [ffmpeg, "-hide_banner", "-v", "error", "-y", "-framerate", "1",
+                   "-start_number", "1", "-i", sequence,
+                   "-vf", f"scale={args.cell_width}:-2,tile={columns}x{rows}",
                    "-frames:v", "1", str(outfile)]
             payload = {"file": str(src.resolve()), "sheet": str(outfile.resolve()),
                        "engine": "ffmpeg tile filter", "columns": columns, "rows": rows}
